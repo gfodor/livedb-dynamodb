@@ -176,8 +176,7 @@ decodeValue = (v, cb) ->
     if err
       cb(err, null)
     else
-      value = null
-      value = JSON.parse(inflated) if inflated.length > 0
+      value = if inflated.length > 0 then JSON.parse(inflated) else null
       cb(null, value)
 
 encodeValue = (v, cb) ->
@@ -195,5 +194,7 @@ docVal = (doc, attr) ->
   type = _.first(_.keys(attribute))
   value = attribute[type]
 
-  return value unless type == 'N'
-  if value == "" then null else _.parseInt(value)
+  if type == 'N'
+    if value == "" then null else _.parseInt(value)
+  else
+    value
