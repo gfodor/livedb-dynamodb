@@ -45,8 +45,6 @@ class LiveDbDynamoDB
           ((err) -> callback(err, results))
 
   writeSnapshot: (cName, docName, data, callback) ->
-    return callback("DynamoDB closed") if @closed
-
     castSnapshotToDoc docName, data, (err, doc) =>
       return callback(err) if err
 
