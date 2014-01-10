@@ -1,6 +1,8 @@
 AWS = require "aws-sdk"
 _ = require "lodash"
 async = require "async"
+liveDbDynamoDB = require "../lib/dynamodb"
+
 AWS.config.update accessKeyId: "TEST", secretAccessKey: "TEST", region: "local"
 
 # Run this using DynamoDB local
@@ -72,12 +74,18 @@ purgeOpsTable = (name, cb) ->
     ProvisionedThroughput: { ReadCapacityUnits: 1, WriteCapacityUnits: 1 },
   }, cb
 
-purgeTables = (cb) ->
+clear = (cb) ->
   purgeDocTable "docs", (err) ->
     purgeOpsTable "docs_ops", cb
 
-describe "harness", ->
-  this.timeout 5000
+create = (callback) ->
+  clear ->
+    dynamodb = new AWS.DynamoDB(endpoint: "http://localhost:8000", sslEnabled: false)
+    callback liveDbDynamoDB dynamodb
 
-  it "should clear", (done) ->
-    purgeTables done
+describe 'dynamodb', ->
+  afterEach (done) ->
+    clear done
+
+  require('livedb/test/snapshotdb') create
+  require('livedb/test/oplog') create
