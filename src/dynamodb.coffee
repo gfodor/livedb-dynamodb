@@ -1,5 +1,6 @@
-bson = require 'bson'
 zlib = require 'zlib'
+async = require 'async'
+_ = require 'lodash'
 
 exports = module.exports = (dynamodb, snapTableName, opTableName, options) ->
   new LiveDbDynamoDB(dynamodb, options)
@@ -24,7 +25,7 @@ class LiveDbDynamoDB
     requestItems = {}
 
     for cName, docNames of requests
-      requestItems[cName] = _.map(docNames, (n) -> { Keys: [{ id: { S: n }}], ConsistentRead: true })
+      requestItems[cName] = { Keys: _.map(docNames, (n) -> { id: { S: n } }), ConsistentRead: true }
 
     # Warning: AWS has 1MB limit on this request. Might be an issue for larger docs?
     @dynamodb.batchGetItem
@@ -36,7 +37,7 @@ class LiveDbDynamoDB
 
         async.each _.keys(data.Responses),
           ((cName, nextMap) ->
-            async.map results[cName], castDocToSnapshot, (err, snapshots) ->
+            async.map data.Responses[cName], castDocToSnapshot, (err, snapshots) ->
               results[cName] = snapshots
               nextMap(err)),
           ((err) -> callback(err, results))
@@ -57,43 +58,48 @@ class LiveDbDynamoDB
   writeOp: (cName, docName, opData, callback) ->
     castOpToDoc docName, opData, (err, doc) =>
       @dynamodb.putItem
-        TableName: cName
+        TableName: this.getOplogCollectionName(cName)
         Item: doc
         callback
 
-  getVersion: (cName, docName, callback) ->
+  getVersion: (cName, docName, callback) =>
     @dynamodb.query
-      TableName: cName
+      TableName: this.getOplogCollectionName(cName)
       Select: 'SPECIFIC_ATTRIBUTES'
       AttributesToGet: ['v']
       Limit: 1
       ConsistentRead: true
       KeyConditions:
-        id:
+        doc_id:
           AttributeValueList: [{ S: docName }]
           ComparisonOperator: 'EQ'
       ScanIndexForward: false
       (err, data) ->
-        return callback(err, 0) if err || !data
+        return callback(err, 0) if err || !data || data.Items.length == 0
         return callback(err, (docVal(_.first(data.Items), "v") || -1) + 1)
 
   getOps: (cName, docName, start, end, callback) ->
     keyConditions =
-      id:
+      doc_id:
         AttributeValueList: [{ S: docName }]
         ComparisonOperator: 'EQ'
 
     if end
-      keyConditions.v =
-        AttributeValueList: [{ N: start }, { N: end - 1 }]
-        ComparisonOperator: 'BETWEEN'
+      if end == start
+        keyConditions.v =
+          AttributeValueList: [{ N: start.toString() }]
+          ComparisonOperator: 'EQ'
+      else
+        keyConditions.v =
+          AttributeValueList: [{ N: start.toString() }, { N: (end - 1).toString() }]
+          ComparisonOperator: 'BETWEEN'
     else
       keyConditions.v =
-        AttributeValueList: [{ N: start }]
+        AttributeValueList: [{ N: start.toString() }]
         ComparisonOperator: 'GE'
 
     @dynamodb.query
-      TableName: cName
+      TableName: this.getOplogCollectionName(cName)
       Select: 'ALL_ATTRIBUTES'
       ConsistentRead: true
       KeyConditions: keyConditions
@@ -104,16 +110,14 @@ class LiveDbDynamoDB
 
 castOpToDoc = (docName, opData, cb) ->
   opData = _.clone(opData)
-  opId = "#{docName} v#{opData.v}"
   opV = opData.v
 
-  encodeValue opData.data, (err, encodedData) ->
+  encodeValue opData, (err, encodedData) ->
     return cb(err) if err
 
     cb err,
-      id: { S: opId }
       doc_id: { S: docName }
-      v: { N: opV }
+      v: { N: opV.toString() }
       data: { B: encodedData }
 
 castDocToOp = (doc, cb) ->
@@ -127,7 +131,7 @@ castSnapshotToDoc = (docName, data, cb) ->
 
       cb err,
         id: { S: docName }
-        type: { N: (data.type || "").toString() }
+        type: { S: (data.type || "").toString() }
         v: { N: data.v.toString() }
         m: { B: encodedM }
         data: { B: encodedData }
@@ -151,16 +155,16 @@ decodeValue = (v, cb) ->
     if err
       cb(err, null)
     else
-      cb(null, bson.deserialize(inflated))
+      cb(null, JSON.parse(inflated))
 
 encodeValue = (v, cb) ->
-  zlib.deflate bson.serialize(v, true, true), (err, deflated) ->
+  zlib.deflate JSON.stringify(v), (err, deflated) ->
     if err
       cb(err, null)
     else
       cb(null, deflated.toString('base64'))
 
-docVal(doc, attr) ->
+docVal = (doc, attr) ->
   attribute = doc[attr]
 
   type = _.first(_.keys(attribute))

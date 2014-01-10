@@ -20,7 +20,6 @@ purgeTable = (tableDefinition, cb) ->
         ((done) ->
           db.describeTable TableName: tableName, (err, tableInfo) ->
             tablePending = !tableInfo? || tableInfo.Table.TableStatus != 'ACTIVE'
-            console.log(tableInfo)
 
             if tablePending
               setTimeout(done, 1000)
@@ -51,11 +50,9 @@ purgeDocTable = (name, cb) ->
     TableName: name
     AttributeDefinitions: [
       { AttributeName: "id", AttributeType: "S" },
-      { AttributeName: "v", AttributeType: "N" },
     ],
     KeySchema: [
       { AttributeName: "id", KeyType: "HASH" },
-      { AttributeName: "v", KeyType: "RANGE" },
     ],
     ProvisionedThroughput: { ReadCapacityUnits: 1, WriteCapacityUnits: 1 },
   }, cb
@@ -75,8 +72,8 @@ purgeOpsTable = (name, cb) ->
   }, cb
 
 clear = (cb) ->
-  purgeDocTable "docs", (err) ->
-    purgeOpsTable "docs_ops", cb
+  purgeDocTable "testcollection", (err) ->
+    purgeOpsTable "testcollection_ops", cb
 
 create = (callback) ->
   clear ->
