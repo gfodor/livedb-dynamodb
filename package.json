@@ -2,12 +2,13 @@
   "name": "livedb-dynamodb",
   "version": "0.1.0",
   "description": "DynamoDB database adapter for livedb",
-  "main": "dynamodb.js",
+  "main": "lib/dynamodb.js",
   "dependencies": {
-    "async": "~0.2",
-    "aws-sdk": "~2.0",
-    "lodash": "~2.4",
-    "zlib": "~1.0",
+    "async": "~0.2.9",
+    "zlib": "~1.0.5",
+    "lodash": "~2.4.1",
+    "optimist": "~0.6.0",
+    "aws-sdk": "2.0.0-rc5"
   },
   "devDependencies": {
     "mocha": "~1",
@@ -17,6 +18,9 @@
   "scripts": {
     "build": "make",
     "test": "mocha"
+  },
+  "bin": {
+    "livedb-dynamodb-init": "./bin/init.js"
   },
   "repository": "git://github.com/gfodor/livedb-dynamodb.git",
   "author": "Greg Fodor",

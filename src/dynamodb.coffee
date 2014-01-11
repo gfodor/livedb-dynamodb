@@ -2,7 +2,7 @@ zlib = require 'zlib'
 async = require 'async'
 _ = require 'lodash'
 
-exports = module.exports = (dynamodb, snapTableName, opTableName, options) ->
+exports = module.exports = (dynamodb, options) ->
   new LiveDbDynamoDB(dynamodb, options)
 
 class LiveDbDynamoDB
@@ -117,6 +117,70 @@ class LiveDbDynamoDB
       (err, data) ->
         return callback(err, []) if err || !data
         async.map data.Items, castDocToOp, callback
+
+  purgeDocTable: (name, readCapacity, writeCapacity, cb) ->
+    purgeTable @dynamodb, {
+      TableName: name
+      AttributeDefinitions: [
+        { AttributeName: "id", AttributeType: "S" },
+      ],
+      KeySchema: [
+        { AttributeName: "id", KeyType: "HASH" },
+      ],
+      ProvisionedThroughput: { ReadCapacityUnits: readCapacity, WriteCapacityUnits: writeCapacity },
+    }, cb
+
+  purgeOpsTable: (name, readCapacity, writeCapacity, cb) ->
+    purgeTable @dynamodb, {
+      TableName: name,
+      AttributeDefinitions: [
+        { AttributeName: "doc_id", AttributeType: "S" },
+        { AttributeName: "v", AttributeType: "N" },
+      ],
+      KeySchema: [
+        { AttributeName: "doc_id", KeyType: "HASH" }
+        { AttributeName: "v", KeyType: "RANGE" }
+      ],
+      ProvisionedThroughput: { ReadCapacityUnits: readCapacity, WriteCapacityUnits: writeCapacity },
+    }, cb
+
+purgeTable = (db, tableDefinition, cb) ->
+  tableName = tableDefinition.TableName
+
+  initTable = (err, initDone) ->
+    db.createTable tableDefinition, (err, data) ->
+      return cb(err) if err
+
+      tablePending = true
+
+      async.whilst ( -> tablePending ),
+        ((done) ->
+          db.describeTable TableName: tableName, (err, tableInfo) ->
+            tablePending = !tableInfo? || tableInfo.Table.TableStatus != 'ACTIVE'
+
+            if tablePending
+              setTimeout(done, 1000)
+            else
+              done()),
+        initDone
+
+  db.listTables (err, data) ->
+    if _.contains(data?.TableNames, tableName)
+      db.deleteTable TableName: tableName, (err, data) ->
+        tableExists = true
+
+        async.whilst (-> tableExists),
+          ((done) ->
+            db.describeTable TableName: tableName, (err, tableInfo) ->
+              tableExists = tableInfo?
+
+              if tableExists
+                setTimeout(done, 1000)
+              else
+                done()),
+          ((err) -> initTable(err, cb))
+    else
+      initTable(null, cb)
 
 castOpToDoc = (docName, opData, cb) ->
   opData = _.clone(opData)
