@@ -206,7 +206,7 @@ castSnapshotToDoc = (docName, data, cb) ->
 
       cb err,
         id: { S: docName }
-        type: { S: (data.type || "").toString() }
+        type: { S: (data.type || "null").toString() }
         v: { N: data.v.toString() }
         m: { B: encodedM }
         data: { B: encodedData }
@@ -226,6 +226,7 @@ castDocToSnapshot = (doc, cb) ->
         m: null
 
       type = docVal(doc, "type")
+      type = null if type == "null"
       v = docVal(doc, "v")
 
       snapshot.type = type if type? && type != ""
