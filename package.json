@@ -1,6 +1,6 @@
 {
   "name": "livedb-dynamodb",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DynamoDB database adapter for livedb",
   "main": "lib/dynamodb.js",
   "dependencies": {

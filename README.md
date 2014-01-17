@@ -1,23 +1,28 @@
 DynamoDB adapter for LiveDB.
 
-As with `livedb-mongo`, snapshots are stored in the main table and operations are stored in `TABLE_ops`. 
+Operations and metadata are stored in DynamoDB, and snapshot data is stored in S3.
+
+As with `livedb-mongo`, doc metadata is stored in the main table and operations are stored in `TABLE_ops`. 
 
 ## Usage
 
-`livedb-dynamodb` wraps a `AWS.DynamoDB` object from the `aws-sdk` npm package. 
+`livedb-dynamodb` wraps a `AWS.DynamoDB` and `AWS.S3` object from the `aws-sdk` npm package. 
 
 ```
 AWS = require("aws-sdk");
 
 var livedbdynamodb = require('livedb-dynamodb');
 var dynamodb = livedbdynamodb(new AWS.DynamoDB());
+var s3 = livedbdynamodb(new AWS.S3());
 
-var livedb = require('livedb').client(dynamodb);
+var livedb = require('livedb').client(dynamodb, s3, { bucketName: "my-snapshot-bucket" });
 ```
 
 ## Creating Tables
 
-The package includes a small commandline utility to create your tables. First, you'll need a `aws.json` file with your credentials of the form:
+The package includes a small commandline utility to create your DynamoDB tables. (You can create your S3 bucket as usual.)
+
+First, you'll need a `aws.json` file with your credentials of the form:
 
 ```
 { "accessKeyId": "ACCESS_KEY", "secretAccessKey": "SECRET_ACCESS_KEY", "region": "REGION" }

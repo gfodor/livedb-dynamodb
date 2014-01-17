@@ -15,18 +15,21 @@ AWS.config.update accessKeyId: "TEST", secretAccessKey: "TEST", region: "local"
 clear = (cb) ->
   dynamodb = new AWS.DynamoDB(endpoint: "http://localhost:8000", sslEnabled: false)
   s3 = new AWS.S3(endpoint: "http://localhost:8001", s3ForcePathStyle: true, sslEnabled: false)
-  
-  liveDbDynamoDB(dynamodb, s3).purgeDocTable "testcollection", 1, 1, "us-west-1", (err) ->
-    liveDbDynamoDB(dynamodb, s3).purgeOpsTable "testcollection_ops", 1, 1, (err) ->
-      cb(err, dynamodb, s3)
+
+  s3.createBucket
+    Bucket: "livedbTest"
+    (err) ->
+      liveDbDynamoDB(dynamodb, s3, { bucketName: "livedbTest" }).purgeDocTable "testcollection", 1, 1, (err) ->
+        liveDbDynamoDB(dynamodb, s3, { bucketName: "livedbTest" }).purgeOpsTable "testcollection_ops", 1, 1, (err) ->
+          cb(err, dynamodb, s3)
 
 create = (callback) ->
   clear (err, dynamodb, s3) ->
-    callback liveDbDynamoDB(dynamodb, s3)
+    callback liveDbDynamoDB(dynamodb, s3, { bucketName: "livedbTest" })
 
 describe 'dynamodb', ->
   afterEach (done) ->
     clear done
 
   require('livedb/test/snapshotdb') create
-  #require('livedb/test/oplog') create
+  require('livedb/test/oplog') create

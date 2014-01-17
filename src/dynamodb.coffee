@@ -2,11 +2,13 @@ zlib = require 'zlib'
 async = require 'async'
 _ = require 'lodash'
 
-exports = module.exports = (dynamodb, options) ->
-  new LiveDbDynamoDB(dynamodb, options)
+exports = module.exports = (dynamodb, s3, options) ->
+  new LiveDbDynamoDB(dynamodb, s3, options)
 
 class LiveDbDynamoDB
   constructor: (@dynamodb, @s3, options) ->
+    throw new Error("Must specify S3 bucket.") unless options.bucketName
+    @bucketName = options.bucketName
 
   close: (callback) ->
 
@@ -21,37 +23,66 @@ class LiveDbDynamoDB
         else
           if data.Item?
             @s3.getObject
-              Bucket: cName
-              Key: docName
+              Bucket: @bucketName
+              Key: "#{cName}/#{docName}"
               (err, object) ->
                 unless object
                   callback(err, null)
                 else
-                  castDocToSnapshot data.Item, callback
+                  castDocToSnapshot data.Item, object.Body, callback
           else
             callback(null, null)
 
   bulkGetSnapshot: (requests, callback) ->
     requestItems = {}
     results = {}
+    docData = {}
+
+    s3Requests = []
 
     for cName, docNames of requests
-      requestItems[cName] = { Keys: _.map(docNames, (n) -> { id: { S: n } }), ConsistentRead: true }
+      requestItems[cName] =
+        Keys: _.map(docNames, (n) -> { id: { S: n } })
+        ConsistentRead: true
+
       results[cName] = {}
+      docData[cName] = {}
 
-    @dynamodb.batchGetItem
-      RequestItems: requestItems
-      (err, data) ->
-        return callback(err) if err
+      for docName in docNames
+        s3Requests.push ((docName, cName) =>
+          (cb) =>
+            @s3.getObject
+              Bucket: @bucketName
+              Key: "#{cName}/#{docName}"
+              (err, data) ->
+                return cb(err) if err && err.code != 'NotFound'
 
-        async.each _.keys(data.Responses),
-          ((cName, nextMap) ->
-            async.map data.Responses[cName], castDocToSnapshot, (err, snapshots) ->
-              for snapshot in snapshots
-                results[cName][snapshot.docName] = snapshot
+                if data?.Body?
+                  docData[cName][docName] = data.Body
 
-              nextMap(err)),
-          ((err) -> callback(err, results))
+                cb(null))(docName, cName)
+
+    async.parallelLimit s3Requests, 16, (err) =>
+      return callback(err) if err
+
+      @dynamodb.batchGetItem
+        RequestItems: requestItems
+        (err, data) ->
+          return callback(err) if err
+
+          async.each _.keys(data.Responses),
+            ((cName, nextMap) ->
+              async.map data.Responses[cName],
+                ((item, cb) ->
+                  docName = docVal(item, "id")
+                  castDocToSnapshot(item, docData[cName][docName], cb)),
+
+                (err, snapshots) ->
+                  for snapshot in snapshots
+                    results[cName][snapshot.docName] = snapshot
+
+                  nextMap(err)),
+            ((err) -> callback(err, results))
 
   writeSnapshot: (cName, docName, data, callback) ->
     castSnapshotToDoc docName, data, (err, doc) =>
@@ -65,8 +96,8 @@ class LiveDbDynamoDB
             cb),
         ((cb) =>
           @s3.putObject
-            Bucket: cName
-            Key: docName
+            Bucket: @bucketName
+            Key: "#{cName}/#{docName}"
             Body: doc.object
             cb)
         ], callback)
@@ -136,7 +167,7 @@ class LiveDbDynamoDB
         return callback(err, []) if err || !data
         async.map data.Items, castDocToOp, callback
 
-  purgeDocTable: (name, readCapacity, writeCapacity, bucketLocation, cb) ->
+  purgeDocTable: (name, readCapacity, writeCapacity, cb) ->
     purgeTable @dynamodb, {
       TableName: name
       AttributeDefinitions: [
@@ -146,12 +177,7 @@ class LiveDbDynamoDB
         { AttributeName: "id", KeyType: "HASH" },
       ],
       ProvisionedThroughput: { ReadCapacityUnits: readCapacity, WriteCapacityUnits: writeCapacity },
-    }, =>
-      @s3.createBucket
-        Bucket: name
-        CreateBucketConfiguration:
-          LocationConstraint: bucketLocation
-        cb
+    }, cb
 
   purgeOpsTable: (name, readCapacity, writeCapacity, cb) ->
     purgeTable @dynamodb, {
@@ -233,15 +259,14 @@ castSnapshotToDoc = (docName, data, cb) ->
           type: { S: (data.type || "").toString() }
           v: { N: data.v.toString() }
           m: { B: encodedM.toString('base64') }
-          data: { B: encodedData.toString('base64') }
         object: encodedData
 
       cb(err, doc)
 
-castDocToSnapshot = (doc, cb) ->
+castDocToSnapshot = (doc, object, cb) ->
   return cb(null) unless doc
 
-  decodeValue docVal(doc, "data"), (err, data) ->
+  decodeValue object, (err, data) ->
     decodeValue docVal(doc, "m"), (err, m) ->
       return cb(err) if err
 
