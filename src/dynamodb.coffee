@@ -6,7 +6,7 @@ exports = module.exports = (dynamodb, options) ->
   new LiveDbDynamoDB(dynamodb, options)
 
 class LiveDbDynamoDB
-  constructor: (@dynamodb, options) ->
+  constructor: (@dynamodb, @s3, options) ->
 
   close: (callback) ->
 
@@ -15,11 +15,21 @@ class LiveDbDynamoDB
       TableName: cName
       Key: { id: { S: docName } }
       ConsistentRead: true
-      (err, data) ->
-        if data
-          castDocToSnapshot data.Item, callback
-        else
+      (err, data) =>
+        unless data
           callback(err, null)
+        else
+          if data.Item?
+            @s3.getObject
+              Bucket: cName
+              Key: docName
+              (err, object) ->
+                unless object
+                  callback(err, null)
+                else
+                  castDocToSnapshot data.Item, callback
+          else
+            callback(null, null)
 
   bulkGetSnapshot: (requests, callback) ->
     requestItems = {}
@@ -29,7 +39,6 @@ class LiveDbDynamoDB
       requestItems[cName] = { Keys: _.map(docNames, (n) -> { id: { S: n } }), ConsistentRead: true }
       results[cName] = {}
 
-    # Warning: AWS has 1MB limit on this request. Might be an issue for larger docs?
     @dynamodb.batchGetItem
       RequestItems: requestItems
       (err, data) ->
@@ -48,10 +57,19 @@ class LiveDbDynamoDB
     castSnapshotToDoc docName, data, (err, doc) =>
       return callback(err) if err
 
-      @dynamodb.putItem
-        TableName: cName
-        Item: doc
-        callback
+      async.parallel([
+        ((cb) =>
+          @dynamodb.putItem
+            TableName: cName
+            Item: doc.item
+            cb),
+        ((cb) =>
+          @s3.putObject
+            Bucket: cName
+            Key: docName
+            Body: doc.object
+            cb)
+        ], callback)
 
   getOplogCollectionName: (cName) -> "#{cName}_ops"
 
@@ -118,7 +136,7 @@ class LiveDbDynamoDB
         return callback(err, []) if err || !data
         async.map data.Items, castDocToOp, callback
 
-  purgeDocTable: (name, readCapacity, writeCapacity, cb) ->
+  purgeDocTable: (name, readCapacity, writeCapacity, bucketLocation, cb) ->
     purgeTable @dynamodb, {
       TableName: name
       AttributeDefinitions: [
@@ -128,7 +146,12 @@ class LiveDbDynamoDB
         { AttributeName: "id", KeyType: "HASH" },
       ],
       ProvisionedThroughput: { ReadCapacityUnits: readCapacity, WriteCapacityUnits: writeCapacity },
-    }, cb
+    }, =>
+      @s3.createBucket
+        Bucket: name
+        CreateBucketConfiguration:
+          LocationConstraint: bucketLocation
+        cb
 
   purgeOpsTable: (name, readCapacity, writeCapacity, cb) ->
     purgeTable @dynamodb, {
@@ -193,7 +216,7 @@ castOpToDoc = (docName, opData, cb) ->
       doc_id: { S: docName }
       op_id: { S: "#{docName}_#{opV}" }
       v: { N: opV.toString() }
-      data: { B: encodedData }
+      data: { B: encodedData.toString('base64') }
 
 castDocToOp = (doc, cb) ->
   return cb(null) unless doc
@@ -204,12 +227,16 @@ castSnapshotToDoc = (docName, data, cb) ->
     encodeValue data.m, (err, encodedM) ->
       return cb(err) if err
 
-      cb err,
-        id: { S: docName }
-        type: { S: (data.type || "").toString() }
-        v: { N: data.v.toString() }
-        m: { B: encodedM }
-        data: { B: encodedData }
+      doc =
+        item:
+          id: { S: docName }
+          type: { S: (data.type || "").toString() }
+          v: { N: data.v.toString() }
+          m: { B: encodedM.toString('base64') }
+          data: { B: encodedData.toString('base64') }
+        object: encodedData
+
+      cb(err, doc)
 
 castDocToSnapshot = (doc, cb) ->
   return cb(null) unless doc
@@ -236,7 +263,7 @@ castDocToSnapshot = (doc, cb) ->
       cb err, snapshot
 
 decodeValue = (v, cb) ->
-  zlib.inflate new Buffer(v, 'base64'), (err, inflated) ->
+  zlib.inflate v, (err, inflated) ->
     if err
       cb(err, null)
     else
@@ -250,7 +277,7 @@ encodeValue = (v, cb) ->
     if err
       cb(err, null)
     else
-      cb(null, deflated.toString('base64'))
+      cb(null, deflated)
 
 docVal = (doc, attr) ->
   attribute = doc[attr]
@@ -260,5 +287,7 @@ docVal = (doc, attr) ->
 
   if type == 'N'
     if value == "" then null else _.parseInt(value)
+  else if type == 'B'
+    new Buffer(value, 'base64')
   else
     value
