@@ -35,14 +35,16 @@ if (argv.l) {
   dynamodb = new AWS.DynamoDB();
 }
 
+s3 = new AWS.S3();
+
 util.log("Creating table " + argv.t + ".");
 
-liveDbDynamoDB(dynamodb).purgeDocTable(argv.t, argv.r, argv.w, function(err) {
+liveDbDynamoDB(dynamodb, s3, { bucketName: "noBucket" }).purgeDocTable(argv.t, argv.r, argv.w, function(err) {
   if (err) { return util.log(err); }
 
   util.log("Creating table " + argv.t + "_ops" + ".");
 
-  liveDbDynamoDB(dynamodb).purgeOpsTable(argv.t + "_ops", argv.r, argv.w, function(err) {
+  liveDbDynamoDB(dynamodb, s3, { bucketName: "noBucket" }).purgeOpsTable(argv.t + "_ops", argv.r, argv.w, function(err) {
     if (err) { return util.log(err); }
 
     util.log("Finished.")
