@@ -106,17 +106,29 @@ class LiveDbDynamoDB
 
   writeOp: (cName, docName, opData, callback) ->
     castOpToDoc docName, opData, (err, doc) =>
-      @dynamodb.putItem
-        TableName: this.getOplogCollectionName(cName)
-        Item: doc
-        Expected:
-          op_id:
-            Exists: false
-        (err, data) ->
-          if !err || (err.code? && err.code == 'ConditionalCheckFailedException')
-            callback(null, data)
+      async.parallel([
+        ((cb) =>
+          @dynamodb.putItem
+            TableName: this.getOplogCollectionName(cName)
+            Item: doc.item
+            Expected:
+              op_id:
+                Exists: false
+            (err, data) ->
+              if !err || (err.code? && err.code == 'ConditionalCheckFailedException')
+                cb(null)
+              else
+                cb(err)),
+        ((cb) =>
+          if doc.object
+            @s3.putObject
+              Bucket: @bucketName
+              Key: "#{this.getOplogCollectionName(cName)}/#{doc.item.op_id.S}"
+              Body: doc.object
+              cb
           else
-            callback(err)
+            cb(null))], callback)
+
 
   getVersion: (cName, docName, callback) =>
     @dynamodb.query
@@ -163,9 +175,19 @@ class LiveDbDynamoDB
       ConsistentRead: true
       KeyConditions: keyConditions
       ScanIndexForward: true
-      (err, data) ->
+      (err, data) =>
         return callback(err, []) if err || !data
-        async.map data.Items, castDocToOp, callback
+
+        async.mapLimit data.Items, 16, ((item, cb) =>
+          if item.data
+            castItemToOp(item, cb)
+          else
+            @s3.getObject
+              Bucket: @bucketName
+              Key: "#{this.getOplogCollectionName(cName)}/#{item.op_id.S}"
+              (err, object) ->
+                return cb(err, null) if err
+                decodeValue object.Body, cb), callback
 
   purgeDocTable: (name, readCapacity, writeCapacity, cb) ->
     purgeTable @dynamodb, {
@@ -238,13 +260,23 @@ castOpToDoc = (docName, opData, cb) ->
   encodeValue opData, (err, encodedData) ->
     return cb(err) if err
 
-    cb err,
-      doc_id: { S: docName }
-      op_id: { S: "#{docName}_#{opV}" }
-      v: { N: opV.toString() }
-      data: { B: encodedData.toString('base64') }
+    encodedBase64Data = encodedData.toString('base64')
 
-castDocToOp = (doc, cb) ->
+    doc =
+      item:
+        doc_id: { S: docName }
+        op_id: { S: "#{docName}_#{opV}" }
+        v: { N: opV.toString() }
+
+    # If large operation, store in S3. Otherwise use DynamoDB.
+    if encodedBase64Data.length > 1024 * 32
+      doc.object = encodedData
+    else
+      doc.item.data = { B: encodedBase64Data }
+
+    cb err, doc
+
+castItemToOp = (doc, cb) ->
   return cb(null) unless doc
   decodeValue docVal(doc, "data"), cb
 
