@@ -278,6 +278,7 @@ castDocToSnapshot = (doc, object, cb) ->
         m: null
 
       type = docVal(doc, "type")
+      type = null if type == "null"
       v = docVal(doc, "v")
 
       snapshot.type = type if type? && type != ""
