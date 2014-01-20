@@ -1,6 +1,6 @@
 {
   "name": "livedb-dynamodb",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "DynamoDB database adapter for livedb",
   "main": "lib/dynamodb.js",
   "dependencies": {
@@ -8,7 +8,8 @@
     "zlib": "~1.0.5",
     "lodash": "~2.4.1",
     "optimist": "~0.6.0",
-    "aws-sdk": "git://github.com/aws/aws-sdk-js.git#master"
+    "aws-sdk": "git://github.com/aws/aws-sdk-js.git#master",
+    "retry": "~0.6.0"
   },
   "devDependencies": {
     "mocha": "~1",

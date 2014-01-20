@@ -1,9 +1,21 @@
 zlib = require 'zlib'
 async = require 'async'
+retry = require 'retry'
 _ = require 'lodash'
 
 exports = module.exports = (dynamodb, s3, options) ->
   new LiveDbDynamoDB(dynamodb, s3, options)
+
+r = (callback, routine) ->
+  op = retry.operation
+    retries: 5
+
+  op.attempt (num) ->
+    routine ->
+      args = _.toArray(arguments)
+
+      return if op.retry(args[0])
+      callback.apply(this, args)
 
 class LiveDbDynamoDB
   constructor: (@dynamodb, @s3, options) ->
@@ -13,25 +25,27 @@ class LiveDbDynamoDB
   close: (callback) ->
 
   getSnapshot: (cName, docName, callback) ->
-    @dynamodb.getItem
-      TableName: cName
-      Key: { id: { S: docName } }
-      ConsistentRead: true
-      (err, data) =>
-        unless data
-          callback(err, null)
-        else
-          if data.Item?
-            @s3.getObject
-              Bucket: @bucketName
-              Key: "#{cName}/#{docName}"
-              (err, object) ->
-                unless object
-                  callback(err, null)
-                else
-                  castDocToSnapshot data.Item, object.Body, callback
+    r callback, (retry) =>
+      @dynamodb.getItem
+        TableName: cName
+        Key: { id: { S: docName } }
+        ConsistentRead: true
+        (err, data) =>
+          unless data
+            retry(err, null)
           else
-            callback(null, null)
+            if data.Item?
+              r callback, (retry) =>
+                @s3.getObject
+                  Bucket: @bucketName
+                  Key: "#{cName}/#{docName}"
+                  (err, object) ->
+                    unless object
+                      retry(err, null)
+                    else
+                      castDocToSnapshot data.Item, object.Body, callback
+            else
+              callback(null, null)
 
   bulkGetSnapshot: (requests, callback) ->
     requestItems = {}
@@ -51,38 +65,40 @@ class LiveDbDynamoDB
       for docName in docNames
         s3Requests.push ((docName, cName) =>
           (cb) =>
-            @s3.getObject
-              Bucket: @bucketName
-              Key: "#{cName}/#{docName}"
-              (err, data) ->
-                return cb(err) if err && err.code != 'NotFound'
+            r cb, (retry) =>
+              @s3.getObject
+                Bucket: @bucketName
+                Key: "#{cName}/#{docName}"
+                (err, data) ->
+                  return retry(err) if err && err.code != 'NotFound'
 
-                if data?.Body?
-                  docData[cName][docName] = data.Body
+                  if data?.Body?
+                    docData[cName][docName] = data.Body
 
-                cb(null))(docName, cName)
+                  cb(null))(docName, cName)
 
     async.parallelLimit s3Requests, 16, (err) =>
       return callback(err) if err
 
-      @dynamodb.batchGetItem
-        RequestItems: requestItems
-        (err, data) ->
-          return callback(err) if err
+      r callback, (retry) =>
+        @dynamodb.batchGetItem
+          RequestItems: requestItems
+          (err, data) ->
+            return retry(err) if err
 
-          async.each _.keys(data.Responses),
-            ((cName, nextMap) ->
-              async.map data.Responses[cName],
-                ((item, cb) ->
-                  docName = docVal(item, "id")
-                  castDocToSnapshot(item, docData[cName][docName], cb)),
+            async.each _.keys(data.Responses),
+              ((cName, nextMap) ->
+                async.map data.Responses[cName],
+                  ((item, cb) ->
+                    docName = docVal(item, "id")
+                    castDocToSnapshot(item, docData[cName][docName], cb)),
 
-                (err, snapshots) ->
-                  for snapshot in snapshots
-                    results[cName][snapshot.docName] = snapshot
+                  (err, snapshots) ->
+                    for snapshot in snapshots
+                      results[cName][snapshot.docName] = snapshot
 
-                  nextMap(err)),
-            ((err) -> callback(err, results))
+                    nextMap(err)),
+              ((err) -> callback(err, results))
 
   writeSnapshot: (cName, docName, data, callback) ->
     castSnapshotToDoc docName, data, (err, doc) =>
@@ -90,16 +106,22 @@ class LiveDbDynamoDB
 
       async.parallel([
         ((cb) =>
-          @dynamodb.putItem
-            TableName: cName
-            Item: doc.item
-            cb),
+          r cb, (retry) =>
+            @dynamodb.putItem
+              TableName: cName
+              Item: doc.item
+              (err, data) ->
+                return retry(err) if err
+                cb(err, data)),
         ((cb) =>
-          @s3.putObject
-            Bucket: @bucketName
-            Key: "#{cName}/#{docName}"
-            Body: doc.object
-            cb)
+          r cb, (retry) =>
+            @s3.putObject
+              Bucket: @bucketName
+              Key: "#{cName}/#{docName}"
+              Body: doc.object
+              (err, data) ->
+                return retry(err) if err
+                cb(err, data)),
         ], callback)
 
   getOplogCollectionName: (cName) -> "#{cName}_ops"
@@ -108,24 +130,28 @@ class LiveDbDynamoDB
     castOpToDoc docName, opData, (err, doc) =>
       async.parallel([
         ((cb) =>
-          @dynamodb.putItem
-            TableName: this.getOplogCollectionName(cName)
-            Item: doc.item
-            Expected:
-              op_id:
-                Exists: false
-            (err, data) ->
-              if !err || (err.code? && err.code == 'ConditionalCheckFailedException')
-                cb(null)
-              else
-                cb(err)),
+          r cb, (retry) =>
+            @dynamodb.putItem
+              TableName: this.getOplogCollectionName(cName)
+              Item: doc.item
+              Expected:
+                op_id:
+                  Exists: false
+              (err, data) ->
+                if !err || (err.code? && err.code == 'ConditionalCheckFailedException')
+                  cb(null)
+                else
+                  retry(err)),
         ((cb) =>
           if doc.object
-            @s3.putObject
-              Bucket: @bucketName
-              Key: "#{this.getOplogCollectionName(cName)}/#{doc.item.op_id.S}"
-              Body: doc.object
-              cb
+            r cb, (retry) =>
+              @s3.putObject
+                Bucket: @bucketName
+                Key: "#{this.getOplogCollectionName(cName)}/#{doc.item.op_id.S}"
+                Body: doc.object
+                (err, data) ->
+                  return retry(err) if err
+                  cb(err, data)
           else
             cb(null))], callback)
 
